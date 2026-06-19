@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=500">
+  <title>StorageEditor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="tabs" role="tablist">
+    <button class="tab-btn active" data-tab="cookies" role="tab" aria-selected="true">Cookies</button>
+    <button class="tab-btn" data-tab="localstorage" role="tab" aria-selected="false">Local Storage</button>
+    <button class="tab-btn" data-tab="indexeddb" role="tab" aria-selected="false">IndexedDB</button>
+    <button class="theme-btn" id="theme-toggle" title="Cambiar tema"></button>
+  </div>
+
+  <div class="tab-panel active" id="panel-cookies" role="tabpanel">
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="cookies-add">+ Nueva</button>
+      <button class="btn btn-sm" id="cookies-export">Exportar</button>
+      <button class="btn btn-sm" id="cookies-import">Importar</button>
+      <button class="btn btn-sm btn-danger" id="cookies-clear">Limpiar todo</button>
+    </div>
+    <div id="cookies-content">
+      <div class="status-msg"><span class="spinner"></span> Cargando cookies...</div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-localstorage" role="tabpanel">
+    <div class="toolbar">
+      <button class="btn btn-primary btn-sm" id="ls-add">+ Nueva</button>
+      <button class="btn btn-sm" id="ls-export">Exportar</button>
+      <button class="btn btn-sm" id="ls-import">Importar</button>
+      <button class="btn btn-sm btn-danger" id="ls-clear">Limpiar todo</button>
+    </div>
+    <div id="ls-content">
+      <div class="status-msg"><span class="spinner"></span> Cargando Local Storage...</div>
+    </div>
+  </div>
+
+  <div class="tab-panel" id="panel-indexeddb" role="tabpanel">
+    <div class="toolbar">
+      <button class="btn btn-sm btn-primary" id="idb-add">+ Añadir</button>
+      <button class="btn btn-sm" id="idb-export-all">Exportar BD</button>
+      <button class="btn btn-sm" id="idb-export-store">Exportar Store</button>
+      <button class="btn btn-sm" id="idb-import">Importar</button>
+      <button class="btn btn-sm btn-danger" id="idb-delete-db">Eliminar BD</button>
+    </div>
+    <div id="idb-content">
+      <div id="idb-tree"><div class="status-msg"><span class="spinner"></span> Cargando bases de datos...</div></div>
+      <div id="idb-records"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal-body"></div>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
