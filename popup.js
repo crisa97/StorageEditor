@@ -77,7 +77,21 @@ async function execInTab(fn, args = []) {
     func: fn,
     args,
   });
-  return results[0].result;
+  const r = results[0];
+  if (r.error) throw new Error(r.error.message || 'Error al ejecutar en la pestaña');
+  return r.result;
+}
+
+async function execInTabMain(fn, args = []) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: state.tabId },
+    func: fn,
+    args,
+    world: 'MAIN',
+  });
+  const r = results[0];
+  if (r.error) throw new Error(r.error.message || 'Error al ejecutar en la pestaña');
+  return r.result;
 }
 
 /* ==============================
@@ -246,10 +260,10 @@ function showCookieModal(cookie, isNew) {
 
       if (!isNew && cookie) {
         const oldUrl = cookieToUrl(cookie);
-        await chrome.cookies.remove({ url: oldUrl, name: cookie.name }).catch(() => {});
+        await chrome.cookies.remove({ url: oldUrl, name: cookie.name, storeId: state.cookieStoreId }).catch(() => {});
       }
 
-      await chrome.cookies.set({ url, ...data, storeId: undefined });
+      await chrome.cookies.set({ url, ...data, storeId: state.cookieStoreId });
       closeModal();
       showToast(isNew ? 'Cookie creada.' : 'Cookie actualizada.');
       loadCookies();
@@ -263,7 +277,7 @@ async function deleteCookie(cookie) {
   if (!confirm('Eliminar la cookie "' + cookie.name + '"?')) return;
   try {
     const url = cookieToUrl(cookie);
-    await chrome.cookies.remove({ url, name: cookie.name });
+    await chrome.cookies.remove({ url, name: cookie.name, storeId: state.cookieStoreId });
     showToast('Cookie eliminada.');
     loadCookies();
   } catch (e) {
@@ -281,6 +295,9 @@ async function showImportCookies() {
   showModal(`<h3>Importar cookies</h3>
     <p>Pega un array JSON de objetos cookie. Cada objeto debe tener al menos <strong>name</strong> y <strong>value</strong>.</p>
     <div class="form-group"><textarea id="import-json" rows="6" placeholder='[{"name":"test","value":"123","domain":"example.com","path":"/","secure":false}]'></textarea></div>
+    <div class="checkbox-group">
+      <label><input type="checkbox" id="import-cookies-clear"> Limpiar cookies antes de importar</label>
+    </div>
     <div class="form-actions">
       <button class="btn" data-action="close">Cancelar</button>
       <button class="btn btn-primary" id="import-exec">Importar</button>
@@ -293,12 +310,23 @@ async function showImportCookies() {
     try { arr = JSON.parse(raw); } catch (e) { showToast('JSON inválido: ' + e.message, 'error'); return; }
     if (!Array.isArray(arr)) { showToast('Debe ser un array de objetos.', 'error'); return; }
 
+    const shouldClear = $('#import-cookies-clear').checked;
+
+    if (shouldClear) {
+      for (const ck of state.cookies) {
+        try {
+          const url = cookieToUrl(ck);
+          await chrome.cookies.remove({ url, name: ck.name, storeId: state.cookieStoreId });
+        } catch {}
+      }
+    }
+
     let ok = 0, errs = 0;
     for (const ck of arr) {
       if (!ck.name || ck.value === undefined) { errs++; continue; }
       try {
         const url = cookieToUrl(ck);
-        await chrome.cookies.set({ url, name: ck.name, value: String(ck.value), domain: ck.domain, path: ck.path || '/', secure: !!ck.secure, httpOnly: !!ck.httpOnly, sameSite: ck.sameSite || 'unspecified', expirationDate: ck.expirationDate ? Number(ck.expirationDate) : undefined });
+        await chrome.cookies.set({ url, name: ck.name, value: String(ck.value), domain: ck.domain, path: ck.path || '/', secure: !!ck.secure, httpOnly: !!ck.httpOnly, sameSite: ck.sameSite || 'unspecified', expirationDate: ck.expirationDate ? Number(ck.expirationDate) : undefined, storeId: state.cookieStoreId });
         ok++;
       } catch { errs++; }
     }
@@ -317,7 +345,7 @@ async function clearCookies() {
   for (const ck of state.cookies) {
     try {
       const url = cookieToUrl(ck);
-      await chrome.cookies.remove({ url, name: ck.name });
+      await chrome.cookies.remove({ url, name: ck.name, storeId: state.cookieStoreId });
       ok++;
     } catch { errs++; }
   }
@@ -332,7 +360,7 @@ async function loadLocalStorage() {
   const c = $('#ls-content');
   c.innerHTML = '<div class="status-msg"><span class="spinner"></span> Cargando Local Storage...</div>';
   try {
-    const data = await execInTab(() => {
+    const data = await execInTabMain(() => {
       const items = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
@@ -401,9 +429,9 @@ function showLSModal(key, value, isNew) {
 
     try {
       if (!isNew && key !== newKey) {
-        await execInTab((k) => { localStorage.removeItem(k); }, [key]);
+        await execInTabMain((k) => { localStorage.removeItem(k); }, [key]);
       }
-      await execInTab((k, v) => { localStorage.setItem(k, v); }, [newKey, newVal]);
+      await execInTabMain((k, v) => { localStorage.setItem(k, v); }, [newKey, newVal]);
       closeModal();
       showToast(isNew ? 'Elemento creado.' : 'Elemento actualizado.');
       loadLocalStorage();
@@ -416,7 +444,7 @@ function showLSModal(key, value, isNew) {
 async function deleteLS(key) {
   if (!confirm('Eliminar la clave "' + key + '"?')) return;
   try {
-    await execInTab((k) => { localStorage.removeItem(k); }, [key]);
+    await execInTabMain((k) => { localStorage.removeItem(k); }, [key]);
     showToast('Elemento eliminado.');
     loadLocalStorage();
   } catch (e) {
@@ -453,16 +481,18 @@ function showImportLS() {
     const replace = $('#import-ls-replace').checked;
 
     try {
-      await execInTab((jsonStr, shouldReplace) => {
+      const imported = await execInTabMain((jsonStr, shouldReplace) => {
         const d = JSON.parse(jsonStr);
         if (shouldReplace) localStorage.clear();
+        let count = 0;
         Object.entries(d).forEach(([k, v]) => {
           localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
+          count++;
         });
-        return Object.keys(d).length;
+        return count;
       }, [JSON.stringify(data), replace]);
       closeModal();
-      showToast(`Importados ${Object.keys(data).length} elementos.`);
+      showToast(`Importados ${imported} elementos.`);
       loadLocalStorage();
     } catch (e) {
       showToast('Error: ' + e.message, 'error');
@@ -474,7 +504,7 @@ async function clearLS() {
   if (state.lsData.length === 0) { showToast('No hay datos que limpiar.', 'info'); return; }
   if (!confirm('Eliminar todos los datos de Local Storage (' + state.lsData.length + ' claves)?')) return;
   try {
-    await execInTab(() => { localStorage.clear(); });
+    await execInTabMain(() => { localStorage.clear(); });
     showToast('Local Storage limpiado.');
     loadLocalStorage();
   } catch (e) {
@@ -492,7 +522,7 @@ async function loadIndexedDB() {
   records.innerHTML = '';
 
   try {
-    const dbs = await execInTab(() => {
+    const dbs = await execInTabMain(() => {
       return indexedDB.databases().then(dbs => dbs.map(d => ({ name: d.name, version: d.version })));
     });
     state.idbDatabases = dbs || [];
@@ -580,7 +610,7 @@ async function loadStores(db) {
   recordsDiv.innerHTML = '<div class="status-msg"><span class="spinner"></span> Cargando stores...</div>';
 
   try {
-    const result = await execInTab((dbName) => {
+    const result = await execInTabMain((dbName) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(dbName);
         req.onsuccess = (e) => {
@@ -610,7 +640,7 @@ async function loadRecords(dbName, storeName) {
   recordsDiv.innerHTML = '<div class="status-msg"><span class="spinner"></span> Cargando registros...</div>';
 
   try {
-    const records = await execInTab((db, st) => {
+    const records = await execInTabMain((db, st) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(db);
         req.onsuccess = (e) => {
@@ -723,7 +753,7 @@ function showIDBRecordModal(record, isNew) {
       if (isNew) {
         const keyArg = newKey || undefined;
         const keyToUse = keyArg ? (() => { try { return JSON.parse(keyArg); } catch { return keyArg; } })() : undefined;
-        await execInTab((db, st, val, k) => {
+        await execInTabMain((db, st, val, k) => {
           return new Promise((resolve, reject) => {
             const req = indexedDB.open(db);
             req.onsuccess = (e) => {
@@ -739,7 +769,7 @@ function showIDBRecordModal(record, isNew) {
         }, [dbName, stName, parsedVal, keyToUse]);
       } else {
         const existingKey = record.key;
-        await execInTab((db, st, val, k) => {
+        await execInTabMain((db, st, val, k) => {
           return new Promise((resolve, reject) => {
             const req = indexedDB.open(db);
             req.onsuccess = (e) => {
@@ -773,7 +803,7 @@ async function deleteIDBRecord(record) {
   if (!confirm('Eliminar registro con clave "' + keyStr + '"?')) return;
 
   try {
-    await execInTab((db, st, key) => {
+    await execInTabMain((db, st, key) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(db);
         req.onsuccess = (e) => {
@@ -807,7 +837,7 @@ async function exportIDBAll() {
   if (!state.selectedDB) { showToast('Selecciona una base de datos primero.', 'info'); return; }
   const dbName = state.selectedDB.name;
   try {
-    const result = await execInTab((dbName) => {
+    const result = await execInTabMain((dbName) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(dbName);
         req.onsuccess = (e) => {
@@ -855,7 +885,7 @@ async function exportIDBStore() {
   const stName = state.selectedStore;
 
   try {
-    const result = await execInTab((db, st) => {
+    const result = await execInTabMain((db, st) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(db);
         req.onsuccess = (e) => {
@@ -910,7 +940,7 @@ function showImportIDB() {
     const shouldClear = $('#import-idb-clear').checked;
 
     try {
-      const result = await execInTab((jsonStr, clear) => {
+      const result = await execInTabMain((jsonStr, clear) => {
         const data = JSON.parse(jsonStr);
         const dbName = data.name;
         let stores = data.stores;
@@ -1029,7 +1059,7 @@ async function deleteIDB() {
   if (!confirm('Eliminar permanentemente la base de datos "' + dbName + '"? Esta acción no se puede deshacer.')) return;
 
   try {
-    await execInTab((name) => {
+    await execInTabMain((name) => {
       return new Promise((resolve, reject) => {
         const req = indexedDB.deleteDatabase(name);
         req.onsuccess = () => resolve(true);
@@ -1092,14 +1122,29 @@ function copyOrDownload(text, filename) {
    INIT
    ============================== */
 async function init() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const wins = await chrome.windows.getAll();
+  const browserWins = wins.filter(w => w.type === 'normal');
+  browserWins.sort((a, b) => {
+    if (a.focused !== b.focused) return a.focused ? -1 : 1;
+    return (b.lastFocused || 0) - (a.lastFocused || 0);
+  });
+  let tab = null;
+  if (browserWins.length) {
+    [tab] = await chrome.tabs.query({ active: true, windowId: browserWins[0].id });
+  }
   if (!tab || !tab.url || !tab.url.startsWith('http')) {
     document.body.innerHTML = '<div class="empty-state" style="padding:60px 20px"><h3 style="font-size:28px;margin-bottom:10px">StorageEditor</h3><p style="color:var(--text-secondary)">Esta extensión solo funciona en páginas web (http/https).</p><p style="font-size:11px;margin-top:8px;color:var(--text-muted)">Abre una página web y vuelve a hacer clic en el icono.</p></div>';
     return;
   }
   state.tabUrl = tab.url;
   state.tabId = tab.id;
-  state.cookieStoreId = tab.cookieStoreId || null;
+  try {
+    const stores = await chrome.cookies.getAllCookieStores();
+    const store = stores.find(s => s.tabIds.includes(tab.id));
+    state.cookieStoreId = store ? store.id : (tab.cookieStoreId || null);
+  } catch {
+    state.cookieStoreId = tab.cookieStoreId || null;
+  }
   initTheme();
   setupTabs();
   switchTab('cookies');
